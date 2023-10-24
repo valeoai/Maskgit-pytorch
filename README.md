@@ -69,14 +69,14 @@ To get started with this project, follow these steps:
    torchrun --standalone --nnodes=1 --nproc_per_node=gpu main.py  --bsize ${bsize} --data-folder "${data_folder}" --vit-folder "${vit_folder}" --vqgan-folder "${vqgan_folder}" --writer-log "${writer_log}" --num_workers ${num_worker} --img-size 256 --epoch 301 --resume
 ## Demo
 
-You are interested only on inference of the model? You can run the demo_colab.ipynb in google collab! [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/valeoai/MaskGIT-pytorch/blob/main/colab_demo.ipynb)
+You are interested only in the inference of the model? You can run the demo_colab.ipynb in google collab! [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/valeoai/MaskGIT-pytorch/blob/main/colab_demo.ipynb)
 
 ## Training Details
 
 The model consists of a total of 246.303M parameters, with 174.161M for the transformer and 72.142M for VQGAN.
 The VQGAN reduces a 256x256 (resp. 512x512) image to a 16x16 (resp. 32x32) token representation, over a bank of 1024 possible codes.
 During the masked transformer training, I used a batch size of 512 over 300 epochs, leveraging 8 GPUs (~768 GPUs/hour on Nvidia A100) for 755 200 iterations on ImageNet 256x256.
-Then, I finetune the same model on ~750 000 iterations on ImageNet 512x512 with a bsize of 128 and ~384 GPUs/hour on Nvidia A100.
+Then, I finetune the same model on ~750 000 iterations on ImageNet 512x512 with a batch size of 128 and ~384 GPUs/hour on Nvidia A100.
 
 The transformer architecture hyperparameters:
 
@@ -127,7 +127,7 @@ The model demonstrates good capabilities in inpainting ImageNet-generated images
 
 ## Pretrained Model
 
-You can download the pretrained MaskGIT models in hugging face: https://huggingface.co/valeoai/Maskgit-pytorch/tree/main
+You can download the pretrained MaskGIT models in [hugging face](https://huggingface.co/llvictorll/Maskgit-pytorch/tree/main).
 
 ## Contribute
 
@@ -139,6 +139,27 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE.txt) f
 
 ## Acknowledgement
 
-This project is powered by IT4I Karolina Cluster locate in the Czech Republic. 
+This project is powered by IT4I Karolina Cluster located in the Czech Republic. 
 
 The pretrained VQGAN ImageNet (f=16), 1024 codebook. The implementation and the pre-trained model is coming from the [VQGAN official repository](https://github.com/CompVis/taming-transformers/tree/master)
+
+## BibTeX
+If you find our work beneficial for your research, please consider citing both our work and the original source.
+```
+@misc{besnier2023MaskGit_pytorch,
+      title={A Pytorch Reproduction of Masked Generative Image Transformer}, 
+      author={Victor Besnier and Mickael Chen},
+      year={2023},
+      eprint={2310.14400},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
+@InProceedings{chang2022maskgit,
+  title = {MaskGIT: Masked Generative Image Transformer},
+  author={Huiwen Chang and Han Zhang and Lu Jiang and Ce Liu and William T. Freeman},
+  booktitle = {CVPR},
+  month = {June},
+  year = {2022}
+}
+```
