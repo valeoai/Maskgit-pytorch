@@ -86,6 +86,8 @@ The transformer architecture hyperparameters:
 
 The optimizer employed is Adam with a learning rate of 1e-4, utilizing an 'arccos' scheduler for masking. Additionally, during training, I applied a 10% dropout for the CFG.
 
+For all the details, please refer to our [technical report](https://arxiv.org/abs/2310.14400v1)
+
 ## Performance on ImageNet
 
 Using the following hyperparameters for sampling:
