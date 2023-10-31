@@ -172,7 +172,7 @@ class MaskGIT(Trainer):
         for x, y in bar:
             x = x.to(self.args.device)
             y = y.to(self.args.device)
-            x = 2 * (x - x.min()) / (x.max() - x.min()) - 1    # VQGAN take normalized img
+            x = 2 * x - 1 # normalize from x in [0,1] to [-1,1] for VQGAN
 
             # Drop xx% of the condition for cfg
             drop_label = torch.empty(y.size()).uniform_(0, 1) < self.args.drop_label
