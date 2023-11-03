@@ -172,7 +172,7 @@ class MaskGIT(Trainer):
         for x, y in bar:
             x = x.to(self.args.device)
             y = y.to(self.args.device)
-            x = 2 * x - 1 # normalize from x in [0,1] to [-1,1] for VQGAN
+            x = 2 * x - 1  # normalize from x in [0,1] to [-1,1] for VQGAN
 
             # Drop xx% of the condition for cfg
             drop_label = torch.empty(y.size()).uniform_(0, 1) < self.args.drop_label
@@ -369,7 +369,7 @@ class MaskGIT(Trainer):
                                          torch.cat([labels, labels], dim=0),
                                          torch.cat([~drop, drop], dim=0))
                         logit_c, logit_u = torch.chunk(logit, 2, dim=0)
-                        _w = w * (indice / len(scheduler))
+                        _w = w * (indice / (len(scheduler)-1))
                         # Classifier Free Guidance
                         logit = (1 + _w) * logit_c - _w * logit_u
                     else:
@@ -383,7 +383,7 @@ class MaskGIT(Trainer):
                 conf = torch.gather(prob, 2, pred_code.view(nb_sample, self.patch_size*self.patch_size, 1))
 
                 if randomize == "linear":  # add gumbel noise decreasing over the sampling process
-                    ratio = (indice / len(scheduler))
+                    ratio = (indice / (len(scheduler)-1))
                     rand = r_temp * np.random.gumbel(size=(nb_sample, self.patch_size*self.patch_size)) * (1 - ratio)
                     conf = torch.log(conf.squeeze()) + torch.from_numpy(rand).to(self.args.device)
                 elif randomize == "warm_up":  # chose random sample for the 2 first steps
