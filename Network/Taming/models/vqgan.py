@@ -7,7 +7,6 @@ from Network.Taming.util import instantiate_from_config
 
 from Network.Taming.modules.diffusionmodules.model import Encoder, Decoder
 from Network.Taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
-from Network.Taming.modules.vqvae.quantize import LatentQuantize
 
 
 class VQModel(pl.LightningModule):
@@ -30,7 +29,7 @@ class VQModel(pl.LightningModule):
         self.embed_dim = embed_dim
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
-        #self.loss = instantiate_from_config(lossconfig)
+        # self.loss = instantiate_from_config(lossconfig)
         self.quantize = VectorQuantizer(n_embed, embed_dim, beta=0.25,
                                         remap=remap, sane_index_shape=sane_index_shape)
         self.quant_conv = torch.nn.Conv2d(ddconfig["z_channels"], embed_dim, 1)
@@ -159,33 +158,4 @@ class VQModel(pl.LightningModule):
         x = F.conv2d(x, weight=self.colorize)
         x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
         return x
-
-class LVQModel(VQModel):
-    def __init__(self,
-                ddconfig,
-                lossconfig,
-                n_embed,
-                embed_dim,
-                ckpt_path=None,
-                ignore_keys=[],
-                image_key="image",
-                colorize_nlabels=None,
-                monitor=None,
-                remap=None,
-                sane_index_shape=False,  # tell vector quantizer to return indices as bhw
-                ):
-
-        super().__init__(ddconfig,
-                         lossconfig,
-                         n_embed,
-                         embed_dim,
-                         ckpt_path=None,
-                         ignore_keys=ignore_keys,
-                         image_key=image_key,
-                         colorize_nlabels=colorize_nlabels,
-                         monitor=monitor,
-                         )
-        self.quantize = LatentQuantize(n_embed, embed_dim, quantization_loss_weight=0.25)
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 

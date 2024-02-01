@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from Trainer.trainer import Trainer
 from Network.transformer import MaskTransformer
 
-from Network.Taming.models.vqgan import VQModel, LVQModel
+from Network.Taming.models.vqgan import VQModel
 
 
 class MaskGIT(Trainer):
@@ -28,11 +28,14 @@ class MaskGIT(Trainer):
         super().__init__(args)
         self.args = args                                                        # Main argument see main.py
         self.scaler = torch.cuda.amp.GradScaler()                               # Init Scaler for multi GPUs
-        self.ae = self.get_network("autoencoder")     
+        self.ae = self.get_network("autoencoder")
+        self.codebook_size = self.ae.n_embed   
+        print("Acquired codebook size:", self.codebook_size)   
         self.vit = self.get_network("vit")                                      # Load Masked Bidirectional Transformer   
         self.patch_size = self.args.img_size // 2**(self.ae.encoder.num_resolutions-1)     # Load VQGAN
         self.criterion = self.get_loss("cross_entropy", label_smoothing=0.1)    # Get cross entropy loss
         self.optim = self.get_optim(self.vit, self.args.lr, betas=(0.9, 0.96))  # Get Adam Optimizer with weight decay
+        
         # Load data if aim to train or test the model
         if not self.args.debug:
             self.train_data, self.test_data = self.get_data()
@@ -70,26 +73,18 @@ class MaskGIT(Trainer):
                 model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
             model = model.to(self.args.device)
-
             if self.args.is_multi_gpus:  # put model on multi GPUs if available
                 model = DDP(model, device_ids=[self.args.device])
 
         elif archi == "autoencoder":
             # Load config
             config = OmegaConf.load(self.args.vqgan_folder + "model.yaml")
-            print('AE config:', config)
-            AE_cls = LVQModel if 'LVQ' in config.model.target else VQModel
-
-            print("AE type is:", 'LVQ' if 'LVQ' in config.model.target else 'VQ')
-            model = AE_cls(**config.model.params)
-            #checkpoint = torch.load(self.args.vqgan_folder + "last.ckpt", map_location="cpu")["state_dict"]
+            model = VQModel(**config.model.params)
+            checkpoint = torch.load(self.args.vqgan_folder + "last.ckpt", map_location="cpu")["state_dict"]
             # Load network
-            #model.load_state_dict(checkpoint, strict=False)
+            model.load_state_dict(checkpoint, strict=False)
             model = model.eval()
             model = model.to(self.args.device)
-            
-            self.codebook_size = model.quantize.codebook_size if 'LVQ' in config.model.target else config.model.params.n_embed
-            print("Acquired codebook size:", self.codebook_size)
             
 
             if self.args.is_multi_gpus: # put model on multi GPUs if available
@@ -105,7 +100,7 @@ class MaskGIT(Trainer):
         return model
 
     @staticmethod
-    def get_mask_code(code, mode="arccos", value=None):
+    def get_mask_code(code, mode="arccos", value=None, codebook_size=256):
         """ Replace the code token by *value* according the the *mode* scheduler
            :param
             code  -> torch.LongTensor(): bsize * 16 * 16, the unmasked code
@@ -134,7 +129,7 @@ class MaskGIT(Trainer):
         if value > 0:  # Mask the selected token by the value
             mask_code[mask] = torch.full_like(mask_code[mask], value)
         else:  # Replace by a randon token
-            mask_code[mask] = torch.randint_like(mask_code[mask], 0, self.codebook_size)
+            mask_code[mask] = torch.randint_like(mask_code[mask], 0, codebook_size)
 
         return mask_code, mask
 
@@ -180,6 +175,7 @@ class MaskGIT(Trainer):
             x = x.to(self.args.device)
             y = y.to(self.args.device)
             x = 2 * x - 1  # normalize from x in [0,1] to [-1,1] for VQGAN
+
             # Drop xx% of the condition for cfg
             drop_label = torch.empty(y.size()).uniform_(0, 1) < self.args.drop_label
 
@@ -187,14 +183,13 @@ class MaskGIT(Trainer):
             with torch.no_grad():
                 emb, _, [_, _, code] = self.ae.encode(x)
                 code = code.reshape(x.size(0), self.patch_size, self.patch_size)
-            
+
             # Mask the encoded tokens
-            masked_code, mask = self.get_mask_code(code, value=self.args.mask_value)
+            masked_code, mask = self.get_mask_code(code, value=self.args.mask_value, codebook_size=self.codebook_size)
 
             with torch.cuda.amp.autocast():                             # half precision
                 pred = self.vit(masked_code, y, drop_label=drop_label)  # The unmasked tokens prediction
                 # Cross-entropy loss
-                #print(code, code.dtype, code.shape)
                 loss = self.criterion(pred.reshape(-1, self.codebook_size + 1), code.view(-1)) / self.args.grad_cum
 
             # update weight if accumulation of gradient is done
