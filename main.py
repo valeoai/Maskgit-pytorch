@@ -71,7 +71,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed',         type=int,   default=42,         help="fix seed")
     parser.add_argument("--epoch",        type=int,   default=300,        help="number of epoch")
     parser.add_argument('--img-size',     type=int,   default=256,        help="image size")
-    parser.add_argument("--bsize",        type=int,   default=256,        help="batch size")
+    parser.add_argument("--bsize",        type=int,   default=8,        help="batch size")
     parser.add_argument("--mask-value",   type=int,   default=1024,       help="number of epoch")
     parser.add_argument("--lr",           type=float, default=1e-4,       help="learning rate to train the transformer")
     parser.add_argument("--cfg_w",        type=float, default=3,          help="classifier free guidance wight")

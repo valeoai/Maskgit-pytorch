@@ -1,1 +1,10 @@
-
+Dataset/
+Datasets/
+logs/
+pretrained_maskgit/
+# ignore any files with pyc extension recursively
+**/*.pyc
+*.txt
+*.pth
+checkpoints/
+.gitignore

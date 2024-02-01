@@ -1,0 +1,55 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "train_ae_lfq",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/launchers/train_ae.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["-cn", "train_ae_lfq",
+                     "debug=True", 
+                     "eval.period=500"
+                    ],
+        },
+        {
+            "name": "test_fs_quantized",
+            "type": "python",
+            "request": "launch",
+            "module": "disentangle.latents.test_fs_quantized",
+            "justMyCode": true
+        },
+        {
+            "name": "test_quantized",
+            "type": "python",
+            "python": "/work/dlclarge1/faridk-quantization/conda/envs/maskgit/bin/python",
+            "request": "launch",
+            "module": "Network.Taming.modules.vqvae.test_latent_quantize",
+            "justMyCode": true
+        },
+        {
+            "name": "test_lfq",
+            "type": "python",
+            "python": "/work/dlclarge1/faridk-quantization/conda/envs/disentangle/bin/python",
+            "request": "launch",
+            "module": "disentangle.latents.test_lfq",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "python": "/work/dlclarge1/faridk-quantization/conda/envs/maskgit/bin/python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}"
+        },
+    ]
+}
