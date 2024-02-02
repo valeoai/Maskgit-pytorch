@@ -3,6 +3,8 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 
 
+from Network.Taming.util import instantiate_from_config
+
 from Network.Taming.modules.diffusionmodules.model import Encoder, Decoder
 from Network.Taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 
@@ -23,6 +25,8 @@ class VQModel(pl.LightningModule):
                  ):
         super().__init__()
         self.image_key = image_key
+        self.n_embed = n_embed
+        self.embed_dim = embed_dim
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
         # self.loss = instantiate_from_config(lossconfig)
@@ -62,7 +66,9 @@ class VQModel(pl.LightningModule):
         return dec
 
     def decode_code(self, code_b):
-        quant_b = self.quantize.get_codebook_entry(code_b.view(-1), (-1, code_b.size(1), code_b.size(2), 256))
+        #get codebook dimensions
+        #print(self.quantize.e_dim, "e_dim")
+        quant_b = self.quantize.get_codebook_entry(code_b.view(-1), (-1, code_b.size(1), code_b.size(2), self.embed_dim))
         dec = self.decode(quant_b)
         return dec
 

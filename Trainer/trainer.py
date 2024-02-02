@@ -46,14 +46,14 @@ class Trainer(object):
                                                              transforms.ToTensor(),
                                                              ]))
         elif self.args.data == "cifar10":
-            data_train = CIFAR10('/Dataset/CIFAR10/', train=True, download=False,
+            data_train = CIFAR10('./Dataset/CIFAR10/', train=True, download=True,
                                  transform=transforms.Compose([
                                            transforms.Resize(self.args.img_size),
                                            transforms.RandomHorizontalFlip(),
                                            transforms.ToTensor(),
                                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                                  ]))
-            data_test = CIFAR10('/Dataset/CIFAR10/', train=False, download=False,
+            data_test = CIFAR10('./Dataset/CIFAR10/', train=False, download=False,
                                 transform=transforms.Compose([
                                     transforms.Resize(self.args.img_size),
                                     transforms.ToTensor(),

@@ -27,13 +27,15 @@ class MaskGIT(Trainer):
         """ Initialization of the model (VQGAN and Masked Transformer), optimizer, criterion, etc."""
         super().__init__(args)
         self.args = args                                                        # Main argument see main.py
-        self.patch_size = self.args.img_size // 16                              # Number of vizual token (+1 for the class)
         self.scaler = torch.cuda.amp.GradScaler()                               # Init Scaler for multi GPUs
-        self.vit = self.get_network("vit")                                      # Load Masked Bidirectional Transformer
-        self.ae = self.get_network("autoencoder")                               # Load VQGAN
+        self.ae = self.get_network("autoencoder")
+        self.codebook_size = self.ae.n_embed   
+        print("Acquired codebook size:", self.codebook_size)   
+        self.vit = self.get_network("vit")                                      # Load Masked Bidirectional Transformer   
+        self.patch_size = self.args.img_size // 2**(self.ae.encoder.num_resolutions-1)     # Load VQGAN
         self.criterion = self.get_loss("cross_entropy", label_smoothing=0.1)    # Get cross entropy loss
         self.optim = self.get_optim(self.vit, self.args.lr, betas=(0.9, 0.96))  # Get Adam Optimizer with weight decay
-
+        
         # Load data if aim to train or test the model
         if not self.args.debug:
             self.train_data, self.test_data = self.get_data()
@@ -52,7 +54,7 @@ class MaskGIT(Trainer):
         """
         if archi == "vit":
             model = MaskTransformer(
-                img_size=self.args.img_size, hidden_dim=768, codebook_size=1024, depth=24, heads=16, mlp_dim=3072, dropout=0.1     # Small
+                img_size=self.args.img_size, hidden_dim=768, codebook_size=self.codebook_size, depth=24, heads=16, mlp_dim=3072, dropout=0.1     # Small
                 # img_size=self.args.img_size, hidden_dim=1024, codebook_size=1024, depth=32, heads=16, mlp_dim=3072, dropout=0.1  # Big
                 # img_size=self.args.img_size, hidden_dim=1024, codebook_size=1024, depth=48, heads=16, mlp_dim=3072, dropout=0.1  # Huge
             )
@@ -71,7 +73,6 @@ class MaskGIT(Trainer):
                 model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 
             model = model.to(self.args.device)
-
             if self.args.is_multi_gpus:  # put model on multi GPUs if available
                 model = DDP(model, device_ids=[self.args.device])
 
@@ -84,6 +85,7 @@ class MaskGIT(Trainer):
             model.load_state_dict(checkpoint, strict=False)
             model = model.eval()
             model = model.to(self.args.device)
+            
 
             if self.args.is_multi_gpus: # put model on multi GPUs if available
                 model = DDP(model, device_ids=[self.args.device])
@@ -98,7 +100,7 @@ class MaskGIT(Trainer):
         return model
 
     @staticmethod
-    def get_mask_code(code, mode="arccos", value=None):
+    def get_mask_code(code, mode="arccos", value=None, codebook_size=256):
         """ Replace the code token by *value* according the the *mode* scheduler
            :param
             code  -> torch.LongTensor(): bsize * 16 * 16, the unmasked code
@@ -127,7 +129,7 @@ class MaskGIT(Trainer):
         if value > 0:  # Mask the selected token by the value
             mask_code[mask] = torch.full_like(mask_code[mask], value)
         else:  # Replace by a randon token
-            mask_code[mask] = torch.randint_like(mask_code[mask], 0, 1024)
+            mask_code[mask] = torch.randint_like(mask_code[mask], 0, codebook_size)
 
         return mask_code, mask
 
@@ -157,7 +159,7 @@ class MaskGIT(Trainer):
         # fill the scheduler by the ratio of tokens to predict at each step
         sche = (val_to_mask / val_to_mask.sum()) * (self.patch_size * self.patch_size)
         sche = sche.round()
-        sche[sche == 0] = 1                                                  # add 1 to predict at least 1 token / step
+        sche[sche == 0] = 1                                                  # add 1 to predict a least 1 token / step
         sche[-1] += (self.patch_size * self.patch_size) - sche.sum()         # need to sum up nb of code
         return tqdm(sche.int(), leave=leave)
 
@@ -183,12 +185,12 @@ class MaskGIT(Trainer):
                 code = code.reshape(x.size(0), self.patch_size, self.patch_size)
 
             # Mask the encoded tokens
-            masked_code, mask = self.get_mask_code(code, value=self.args.mask_value)
+            masked_code, mask = self.get_mask_code(code, value=self.args.mask_value, codebook_size=self.codebook_size)
 
             with torch.cuda.amp.autocast():                             # half precision
                 pred = self.vit(masked_code, y, drop_label=drop_label)  # The unmasked tokens prediction
                 # Cross-entropy loss
-                loss = self.criterion(pred.reshape(-1, 1024 + 1), code.view(-1)) / self.args.grad_cum
+                loss = self.criterion(pred.reshape(-1, self.codebook_size + 1), code.view(-1)) / self.args.grad_cum
 
             # update weight if accumulation of gradient is done
             update_grad = self.args.iter % self.args.grad_cum == self.args.grad_cum - 1
@@ -291,7 +293,7 @@ class MaskGIT(Trainer):
             if code is not None:
                 code = code.view(code.size(0), self.patch_size, self.patch_size)
                 # Decoding reel code
-                _x = self.ae.decode_code(torch.clamp(code, 0, 1023))
+                _x = self.ae.decode_code(torch.clamp(code, 0, self.codebook_size-1))
                 if mask is not None:
                     # Decoding reel code with mask to hide
                     mask = mask.view(code.size(0), 1, self.patch_size, self.patch_size).float()
@@ -300,13 +302,13 @@ class MaskGIT(Trainer):
             if masked_code is not None:
                 # Decoding masked code
                 masked_code = masked_code.view(code.size(0), self.patch_size, self.patch_size)
-                __x = self.ae.decode_code(torch.clamp(masked_code, 0, 1023))
+                __x = self.ae.decode_code(torch.clamp(masked_code, 0,  self.codebook_size-1))
                 l_visual.append(__x)
 
             if unmasked_code is not None:
                 # Decoding predicted code
                 unmasked_code = unmasked_code.view(code.size(0), self.patch_size, self.patch_size)
-                ___x = self.ae.decode_code(torch.clamp(unmasked_code, 0, 1023))
+                ___x = self.ae.decode_code(torch.clamp(unmasked_code, 0, self.codebook_size-1))
                 l_visual.append(___x)
 
         return torch.cat(l_visual, dim=0)
@@ -340,10 +342,10 @@ class MaskGIT(Trainer):
             drop = torch.ones(nb_sample, dtype=torch.bool).to(self.args.device)
             if init_code is not None:  # Start with a pre-define code
                 code = init_code
-                mask = (init_code == 1024).float().view(nb_sample, self.patch_size*self.patch_size)
+                mask = (init_code == self.codebook_size).float().view(nb_sample, self.patch_size*self.patch_size)
             else:  # Initialize a code
                 if self.args.mask_value < 0:  # Code initialize with random tokens
-                    code = torch.randint(0, 1024, (nb_sample, self.patch_size, self.patch_size)).to(self.args.device)
+                    code = torch.randint(0, self.codebook_size, (nb_sample, self.patch_size, self.patch_size)).to(self.args.device)
                 else:  # Code initialize with masked tokens
                     code = torch.full((nb_sample, self.patch_size, self.patch_size), self.args.mask_value).to(self.args.device)
                 mask = torch.ones(nb_sample, self.patch_size*self.patch_size).to(self.args.device)
@@ -410,7 +412,7 @@ class MaskGIT(Trainer):
                 l_mask.append(mask.view(nb_sample, self.patch_size, self.patch_size).clone())
 
             # decode the final prediction
-            _code = torch.clamp(code, 0, 1023)
+            _code = torch.clamp(code, 0,  self.codebook_size-1)
             x = self.ae.decode_code(_code)
 
         self.vit.train()
