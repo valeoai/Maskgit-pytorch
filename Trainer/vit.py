@@ -30,12 +30,12 @@ class MaskGIT(Trainer):
         self.scaler = torch.cuda.amp.GradScaler()                               # Init Scaler for multi GPUs
         self.ae = self.get_network("autoencoder")
         self.codebook_size = self.ae.n_embed   
-        print("Acquired codebook size:", self.codebook_size)   
-        self.vit = self.get_network("vit")                                      # Load Masked Bidirectional Transformer   
         self.patch_size = self.args.img_size // 2**(self.ae.encoder.num_resolutions-1)     # Load VQGAN
+        print(f"Acquired codebook size: {self.codebook_size}, f_factor: {2**(self.ae.encoder.num_resolutions-1)}")
+        self.vit = self.get_network("vit")                                      # Load Masked Bidirectional Transformer
         self.criterion = self.get_loss("cross_entropy", label_smoothing=0.1)    # Get cross entropy loss
         self.optim = self.get_optim(self.vit, self.args.lr, betas=(0.9, 0.96))  # Get Adam Optimizer with weight decay
-        
+
         # Load data if aim to train or test the model
         if not self.args.debug:
             self.train_data, self.test_data = self.get_data()
@@ -53,12 +53,18 @@ class MaskGIT(Trainer):
                 model -> nn.Module: the network
         """
         if archi == "vit":
-            model = MaskTransformer(
-                img_size=self.args.img_size, hidden_dim=768, codebook_size=self.codebook_size, depth=24, heads=16, mlp_dim=3072, dropout=0.1     # Small
-                # img_size=self.args.img_size, hidden_dim=1024, codebook_size=1024, depth=32, heads=16, mlp_dim=3072, dropout=0.1  # Big
-                # img_size=self.args.img_size, hidden_dim=1024, codebook_size=1024, depth=48, heads=16, mlp_dim=3072, dropout=0.1  # Huge
-            )
-
+            if self.args.vit_size == "base":
+                model = MaskTransformer(
+                    img_size=self.args.img_size, hidden_dim=768, codebook_size=self.codebook_size, f_factor=self.patch_size, depth=24, heads=16, mlp_dim=3072, dropout=0.1
+                )
+            elif self.args.vit_size == "big":
+                model = MaskTransformer(
+                    img_size=self.args.img_size, hidden_dim=1024, codebook_size=self.codebook_size, f_factor=self.patch_size, depth=32, heads=16, mlp_dim=3072, dropout=0.1  # Big
+                )
+            elif self.args.vit_size == "huge":
+                model = MaskTransformer(
+                    img_size=self.args.img_size, hidden_dim=1024, codebook_size=self.codebook_size, f_factor=self.patch_size, depth=48, heads=16, mlp_dim=3072, dropout=0.1  # Huge
+                )
             if self.args.resume:
                 ckpt = self.args.vit_folder
                 ckpt += "current.pth" if os.path.isdir(self.args.vit_folder) else ""
@@ -78,14 +84,13 @@ class MaskGIT(Trainer):
 
         elif archi == "autoencoder":
             # Load config
-            config = OmegaConf.load(self.args.vqgan_folder + "model.yaml")
+            config = OmegaConf.load(os.path.join(self.args.vqgan_folder, "configs", "model.yaml"))
             model = VQModel(**config.model.params)
-            checkpoint = torch.load(self.args.vqgan_folder + "last.ckpt", map_location="cpu")["state_dict"]
+            checkpoint = torch.load(os.path.join(self.args.vqgan_folder, "ckpts", "last.ckpt"), map_location="cpu")["state_dict"]
             # Load network
             model.load_state_dict(checkpoint, strict=False)
             model = model.eval()
             model = model.to(self.args.device)
-            
 
             if self.args.is_multi_gpus: # put model on multi GPUs if available
                 model = DDP(model, device_ids=[self.args.device])
@@ -166,18 +171,20 @@ class MaskGIT(Trainer):
     def train_one_epoch(self, log_iter=2500):
         """ Train the model for 1 epoch """
         self.vit.train()
-        cum_loss = 0.
+        cum_loss, cum_acc = 0., 0.
         window_loss = deque(maxlen=self.args.grad_cum)
+        window_acc = deque(maxlen=self.args.grad_cum)
         bar = tqdm(self.train_data, leave=False) if self.args.is_master else self.train_data
         n = len(self.train_data)
         # Start training for 1 epoch
         for x, y in bar:
+            self.adapt_learning_rate()   # adapt the learning rate with a warmup and a cosine decay
             x = x.to(self.args.device)
             y = y.to(self.args.device)
             x = 2 * x - 1  # normalize from x in [0,1] to [-1,1] for VQGAN
 
             # Drop xx% of the condition for cfg
-            drop_label = torch.empty(y.size()).uniform_(0, 1) < self.args.drop_label
+            drop_label = (torch.rand(x.size(0)) < self.args.drop_label).bool().to(self.args.device)
 
             # VQGAN encoding to img tokens
             with torch.no_grad():
@@ -207,23 +214,39 @@ class MaskGIT(Trainer):
 
             cum_loss += loss.cpu().item()
             window_loss.append(loss.data.cpu().numpy().mean())
+            acc = torch.max(pred.reshape(-1, self.codebook_size+1).data, 1)[1]
+            acc = (acc.view(-1) == code.view(-1)).float().mean().item()
+            cum_acc += acc
+            window_acc.append(acc)
+
             # logs
             if update_grad and self.args.is_master:
-                self.log_add_scalar('Train/Loss', np.array(window_loss).sum(), self.args.iter)
+                self.log_add_scalar('Train/MiniLoss', np.array(window_loss).sum(), self.args.iter // self.args.grad_cum)
+                self.log_add_scalar('Train/MiniAcc', np.array(window_acc).mean(), self.args.iter // self.args.grad_cum)
 
             if self.args.iter % log_iter == 0 and self.args.is_master:
                 # Generate sample for visualization
-                gen_sample = self.sample(nb_sample=10)[0]
+                gen_sample = self.sample(init_code=None,
+                                         nb_sample=10,
+                                         labels=None,
+                                         sm_temp=self.args.sm_temp,
+                                         w=self.args.cfg_w,
+                                         randomize="linear",
+                                         r_temp=self.args.r_temp,
+                                         sched_mode=self.args.sched_mode,
+                                         step=self.args.step
+                                         )[0]
                 gen_sample = vutils.make_grid(gen_sample, nrow=10, padding=2, normalize=True)
                 self.log_add_img("Images/Sampling", gen_sample, self.args.iter)
                 # Show reconstruction
+                nb_sample = min(10, x.size(0))
                 unmasked_code = torch.softmax(pred, -1).max(-1)[1]
                 reco_sample = self.reco(x=x[:10], code=code[:10], unmasked_code=unmasked_code[:10], mask=mask[:10])
-                reco_sample = vutils.make_grid(reco_sample.data, nrow=10, padding=2, normalize=True)
+                reco_sample = vutils.make_grid(reco_sample.data, nrow=nb_sample, padding=2, normalize=True)
                 self.log_add_img("Images/Reconstruction", reco_sample, self.args.iter)
 
                 # Save Network
-                self.save_network(model=self.vit, path=self.args.vit_folder+"current.pth",
+                self.save_network(model=self.vit, path=os.path.join(self.args.vit_folder, "current.pth"),
                                   iter=self.args.iter, optimizer=self.optim, global_epoch=self.args.global_epoch)
 
             self.args.iter += 1
@@ -251,7 +274,7 @@ class MaskGIT(Trainer):
 
             # Save model
             if e % 10 == 0 and self.args.is_master:
-                self.save_network(model=self.vit, path=self.args.vit_folder + f"epoch_{self.args.global_epoch:03d}.pth",
+                self.save_network(model=self.vit, path=os.path.join(self.args.vit_folder,  f"epoch_{self.args.global_epoch:03d}.pth"),
                                   iter=self.args.iter, optimizer=self.optim, global_epoch=self.args.global_epoch)
 
             # Clock time
@@ -417,3 +440,5 @@ class MaskGIT(Trainer):
 
         self.vit.train()
         return x, l_codes, l_mask
+
+

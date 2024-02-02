@@ -113,7 +113,7 @@ class TransformerEncoder(nn.Module):
 
 
 class MaskTransformer(nn.Module):
-    def __init__(self, img_size=256, hidden_dim=768, codebook_size=1024, depth=24, heads=8, mlp_dim=3072, dropout=0.1, nclass=1000):
+    def __init__(self, img_size=256, hidden_dim=768, codebook_size=1024, f_factor=16, depth=24, heads=8, mlp_dim=3072, dropout=0.1, nclass=1000):
         """ Initialize the Transformer model.
             :param:
                 img_size       -> int:     Input image size (default: 256)
@@ -128,7 +128,7 @@ class MaskTransformer(nn.Module):
 
         super().__init__()
         self.nclass = nclass
-        self.patch_size = img_size // 16
+        self.patch_size = f_factor
         self.codebook_size = codebook_size
         self.tok_emb = nn.Embedding(codebook_size+1+nclass+1, hidden_dim)  # +1 for the mask of the viz token, +1 for mask of the class
         self.pos_emb = nn.init.trunc_normal_(nn.Parameter(torch.zeros(1, (self.patch_size*self.patch_size)+1, hidden_dim)), 0., 0.02)

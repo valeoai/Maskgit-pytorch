@@ -251,6 +251,15 @@ class Trainer(object):
                         'optimizer_state_dict': optimizer.state_dict()},
                        path)
 
+    def adapt_learning_rate(self):
+        """ Adapt the learning rate of the optimizer following a cosine weigh decay"""
+        if self.args.iter < self.args.warm_up * self.args.grad_cum:  # linear warmup for 2500 updates
+            self.optim.param_groups[0]['lr'] = self.args.lr * (self.args.iter / (self.args.warm_up * self.args.grad_cum))
+        # else:  # cosine learning rate decay
+        #     updates = self.args.iter / self.args.grad_cum
+        #     cosine_decay = (1 + np.cos(np.pi * (updates - (self.args.max_iter - 50_000)) / 50_000.))
+        #     self.optim.param_groups[0]['lr'] = self.args.lr * 0.5 * cosine_decay
+
 
 class ImageNetKaggle(Dataset):
     def __init__(self, root, split, transform=None):
