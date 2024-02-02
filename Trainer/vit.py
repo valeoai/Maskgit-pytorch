@@ -157,7 +157,7 @@ class MaskGIT(Trainer):
         # fill the scheduler by the ratio of tokens to predict at each step
         sche = (val_to_mask / val_to_mask.sum()) * (self.patch_size * self.patch_size)
         sche = sche.round()
-        sche[sche == 0] = 1                                                  # add 1 to predict a least 1 token / step
+        sche[sche == 0] = 1                                                  # add 1 to predict at least 1 token / step
         sche[-1] += (self.patch_size * self.patch_size) - sche.sum()         # need to sum up nb of code
         return tqdm(sche.int(), leave=leave)
 
