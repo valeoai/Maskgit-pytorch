@@ -1,2 +1,9 @@
-pretrained_maskgit/
-run.sh
+saved_networks/ImageNet_384_large.pth
+saved_networks/vq_ds16_c2i.pt
+__pycache__/
+launch/exp/
+flagged/
+Trainer/txt_trainer.py
+extract_vq_txt_features.py
+.*
+!/.gitignore
