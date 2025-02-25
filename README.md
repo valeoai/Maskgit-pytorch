@@ -34,7 +34,7 @@ This repository introduces **Halton Scheduler for Masked Generative Image Transf
 
 Explore, train, and extend our easy to use generative models! 🚀
 
-The v1.0 version, previously known as "MaskGIT-pytorch" is available [here!](https://github.com/valeoao/Halton-MaskGIT/releases/tag/v1.0)
+The v1.0 version, previously known as "MaskGIT-pytorch" is available [here!](https://github.com/valeoai/Halton-MaskGIT/tree/v1.0)
 
 ---
 
@@ -206,4 +206,12 @@ If you find our work useful, please cite us and add a star ⭐ to the repository
 
 ## ⭐ Stars History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date)](https://star-history.com/#valeoai/Halton-Maskgit&Date)
+## Star History
+
+<a href="https://star-history.com/#valeoai/Halton-Maskgit&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date" />
+ </picture>
+</a>
