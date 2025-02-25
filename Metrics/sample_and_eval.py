@@ -1,87 +1,60 @@
-# Borrowed from https://github.com/nicolas-dufour/diffusion/blob/master/metrics/sample_and_eval.py
-import random
-import clip
+import os
 import torch
 from tqdm import tqdm
+
+from torchmetrics.multimodal.clip_score import CLIPScore
 
 from Metrics.inception_metrics import MultiInceptionMetrics
 
 
-def remap_image_torch(image):
-    min_norm = image.min(-1)[0].min(-1)[0].min(-1)[0].view(-1, 1, 1, 1)
-    max_norm = image.max(-1)[0].max(-1)[0].max(-1)[0].view(-1, 1, 1, 1)
-    image_torch = ((image - min_norm) / (max_norm - min_norm)) * 255
-    image_torch = torch.clip(image_torch, 0, 255).to(torch.uint8)
-    return image_torch
-
-
 class SampleAndEval:
-    def __init__(self, device, num_images=50000, compute_per_class_metrics=False, num_classes=1000):
+    def __init__(self, device, is_master, nb_gpus, num_images=50_000, num_classes=1_000, compute_manifold=True, mode="c2i"):
         super().__init__()
         self.inception_metrics = MultiInceptionMetrics(
-            reset_real_features=False,
-            compute_unconditional_metrics=False,
-            compute_conditional_metrics=True,
-            compute_conditional_metrics_per_class=compute_per_class_metrics,
-            num_classes=num_classes,
-            num_inception_chunks=10,
-            manifold_k=3,
-        )
+            device=device, compute_manifold=compute_manifold, num_classes=num_classes,
+            num_inception_chunks=10, manifold_k=3, model="inception")
+
         self.num_images = num_images
-        self.true_features_computed = False
         self.device = device
+        self.is_master = is_master
+        self.nb_gpus = nb_gpus
+        self.mode = mode
 
-    def compute_and_log_metrics(self, module):
-        with torch.no_grad():
-            if not self.true_features_computed or not self.inception_metrics.reset_real_features:
-                self.compute_true_images_features(module.test_data)
-                self.true_features_computed = True
-            self.compute_fake_images_features(module, module.test_data)
+        if mode == "t2i":
+            self.clip_score = CLIPScore("openai/clip-vit-large-patch14").to(device)
 
-            metrics = self.inception_metrics.compute()
-            metrics = {f"Eval/{k}": v for k, v in metrics.items()}
-            print(metrics)
-
-    def compute_true_images_features(self, dataloader):
-        if len(dataloader.dataset) < self.num_images:
-            max_images = len(dataloader.dataset)
-        else:
-            max_images = self.num_images
-        bar = tqdm(dataloader, leave=False, desc="Computing true images features")
-        for i, (images, labels) in enumerate(bar):
-            if i * dataloader.batch_size >= max_images:
+    @torch.no_grad()
+    def compute_images_features_from_model(self, trainer, sampler, data_loader):
+        bar = tqdm(data_loader, leave=False, desc="Computing images features") if self.is_master else data_loader
+        cpt = 0
+        for images, labels in bar:
+            if cpt * data_loader.batch_size * self.nb_gpus >= self.num_images > 0:
                 break
 
-            self.inception_metrics.update(remap_image_torch(images.to(self.device)),
-                                          labels.to(self.device),
-                                          image_type="real")
+            labels = labels.to(self.device)
+            if self.mode == "t2i":
+                labels = labels[0]  # <- coco does have 5 captions for each img
+                gen_images = sampler(trainer=trainer, txt_promt=labels)[0]
+                self.clip_score.update(images, labels)
+            elif self.mode == "c2i":
+                gen_images = sampler(trainer=trainer, nb_sample=images.size(0), labels=labels, verbose=False)[0]
+            elif self.mode == "vq":
+                code = trainer.ae.encode(images.to(self.device)).to(self.device)
+                code = code.view(code.size(0), trainer.input_size, trainer.input_size)
+                # Decoding reel code
+                gen_images = trainer.ae.decode_code(torch.clamp(code, 0, trainer.args.codebook_size - 1))
 
-    def compute_fake_images_features(self, module, dataloader):
-        if len(dataloader.dataset) < self.num_images:
-            max_images = len(dataloader.dataset)
-        else:
-            max_images = self.num_images
+            self.inception_metrics.update(gen_images, image_type="fake")
+            if not os.path.exists("./saved_networks/ImageNet_256_train_stats.pt") or not trainer.args.data.startswith("imagenet"):
+                self.inception_metrics.update(images, image_type="real")
 
-        bar = tqdm(dataloader, leave=False, desc="Computing fake images features")
-        for i, (images, labels) in enumerate(bar):
-            if i * dataloader.batch_size >= max_images:
-                break
+            cpt += 1
 
-            with torch.no_grad():
-                if isinstance(labels, list):
-                    labels = clip.tokenize(labels[random.randint(0, 4)]).to(self.device)
-                    labels = module.clip.encode_text(labels).float()
-                else:
-                    labels = labels.to(self.device)
-                images = module.sample(nb_sample=images.size(0),
-                                       labels=labels,
-                                       sm_temp=module.args.sm_temp,
-                                       w=module.args.cfg_w,
-                                       randomize="linear",
-                                       r_temp=module.args.r_temp,
-                                       sched_mode=module.args.sched_mode,
-                                       step=module.args.step)[0]
-                images = images.float()
-                self.inception_metrics.update(remap_image_torch(images),
-                                              labels,
-                                              image_type="conditional")
+        metrics = self.inception_metrics.compute()
+
+        if self.mode == "t2i":
+            metrics[f"clip_score"] = self.clip_score.compute().item()
+        metrics = {f"{k}": round(v, 4) for k, v in metrics.items()}
+
+        return metrics
+

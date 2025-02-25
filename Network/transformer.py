@@ -1,196 +1,312 @@
-# BERT architecture for the Masked Bidirectional Encoder Transformer
+# Transformer Encoder architecture
+# some part have been borrowed from:
+#   - NanoGPT: https://github.com/karpathy/nanoGPT
+#   - DiT: https://github.com/facebookresearch/DiT
+
+import math
+
 import torch
 from torch import nn
+import torch.nn.functional as F
+
+from einops import rearrange
 
 
-class PreNorm(nn.Module):
+def param_count(archi, model):
+    print(f"Size of model {archi}: "
+          f"{sum(p.numel() for p in model.parameters() if p.requires_grad) / 10 ** 6:.3f}M")
 
-    def __init__(self, dim, fn):
-        """ PreNorm module to apply layer normalization before a given function
-            :param:
-                dim  -> int: Dimension of the input
-                fn   -> nn.Module: The function to apply after layer normalization
-            """
-        super().__init__()
-        self.norm = nn.LayerNorm(dim)
-        self.fn = fn
 
-    def forward(self, x, **kwargs):
-        """ Forward pass through the PreNorm module
-            :param:
-                x        -> torch.Tensor: Input tensor
-                **kwargs -> _ : Additional keyword arguments for the function
-            :return
-                torch.Tensor: Output of the function applied after layer normalization
-        """
-        return self.fn(self.norm(x), **kwargs)
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout=0.):
-        """ Initialize the Multi-Layer Perceptron (MLP).
-            :param:
-                dim        -> int : Dimension of the input
-                dim        -> int : Dimension of the hidden layer
-                dim        -> float : Dropout rate
-        """
+    def __init__(self, dim, h_dim, multiple_of=256, bias=False, dropout=0.):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim, bias=True),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim, bias=True),
-            nn.Dropout(dropout)
-        )
+        self.dropout = dropout
+        # swinGLU
+        h_dim = int(2 * h_dim / 3)
+        # make sure it is a power of 256
+        h_dim = multiple_of * ((h_dim + multiple_of - 1) // multiple_of)
+        self.w1 = nn.Linear(dim, h_dim, bias=bias)
+        self.w2 = nn.Linear(h_dim, dim, bias=bias)
+        self.w3 = nn.Linear(dim, h_dim, bias=bias)
 
     def forward(self, x):
-        """ Forward pass through the MLP module.
-            :param:
-                x -> torch.Tensor: Input tensor
-            :return
-                torch.Tensor: Output of the function applied after layer
-        """
-        return self.net(x)
+        # SwiGLU activation
+        x = F.silu(self.w1(x)) * self.w3(x)
+        if self.dropout > 0. and self.training:
+            x = F.dropout(x, self.dropout)
+
+        return self.w2(x)
+
+
+class QKNorm(torch.nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.query_norm = RMSNorm(dim, linear=False, bias=False)
+        self.key_norm = RMSNorm(dim, linear=False, bias=False)
+
+    def forward(self, q, k, v):
+        q = self.query_norm(q)
+        k = self.key_norm(k)
+        return q.to(v), k.to(v)
 
 
 class Attention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.):
-        """ Initialize the Attention module.
-            :param:
-                embed_dim     -> int : Dimension of the embedding
-                num_heads     -> int : Number of heads
-                dropout       -> float : Dropout rate
-        """
-        super(Attention, self).__init__()
-        self.dim = embed_dim
-        self.mha = nn.MultiheadAttention(embed_dim, num_heads=num_heads, dropout=dropout, batch_first=True, bias=True)
+    def __init__(self, embed_dim, num_heads, dropout=0., use_flash=True, bias=False):
+        super().__init__()
+        self.flash = use_flash # use flash attention?
+        self.n_local_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.dropout = dropout
+        self.wq = nn.Linear(embed_dim, num_heads * self.head_dim, bias=bias)
+        self.wk = nn.Linear(embed_dim, num_heads * self.head_dim, bias=bias)
+        self.wv = nn.Linear(embed_dim, num_heads * self.head_dim, bias=bias)
+        self.wo = nn.Linear(num_heads * self.head_dim, embed_dim, bias=bias)
+
+        self.qk_norm = QKNorm(num_heads * self.head_dim)
+
+        # will be KVCache object managed by inference context manager
+        self.cache = None
+
+    def forward(self, x, mask=None):
+        b, h_w, _ = x.shape
+        # calculate query, key, value and split out heads
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        # normalize queries and keys
+        xq, xk = self.qk_norm(xq, xk, xv)
+        xq = xq.view(b, h_w, self.n_local_heads, self.head_dim)
+        xk = xk.view(b, h_w, self.n_local_heads, self.head_dim)
+        xv = xv.view(b, h_w, self.n_local_heads, self.head_dim)
+
+        # make heads be a batch dim
+        xq, xk, xv = (x.transpose(1, 2) for x in (xq, xk, xv))
+        # attention
+        if self.flash:
+            if mask is not None:
+                mask = mask.view(b, 1, 1, h_w)
+            output = F.scaled_dot_product_attention(xq, xk, xv, mask, dropout_p=self.dropout if self.training else 0.)
+        else:
+            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if mask is not None:
+                scores = scores + mask  # (bs, heads, seqlen, cache_len + seqlen)
+            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+            output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
+        # concatenate all the heads
+        output = output.transpose(1, 2).contiguous().view(b, h_w, -1)
+        # output projection
+        proj = self.wo(output)
+        if self.dropout > 0. and self.training:
+            proj = F.dropout(proj, self.dropout)
+        return proj
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-5, linear=True, bias=True):
+        super().__init__()
+        self.eps = eps
+        self.linear = linear
+        self.add_bias = bias
+        if self.linear:
+            self.weight = nn.Parameter(torch.ones(dim))
+        if self.add_bias:
+            self.bias = nn.Parameter(torch.zeros(dim))
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
-        """ Forward pass through the Attention module.
-            :param:
-                x -> torch.Tensor: Input tensor
-            :return
-                attention_value  -> torch.Tensor: Output the value of the attention
-                attention_weight -> torch.Tensor: Output the weight of the attention
-        """
-        attention_value, attention_weight = self.mha(x, x, x)
-        return attention_value, attention_weight
+        output = self._norm(x.float()).type_as(x)
+        if self.linear:
+            output = self.weight * output
+        if self.add_bias:
+            output = output + self.bias
+        return output
+
+
+class AdaNorm(nn.Module):
+    def __init__(self, x_dim, y_dim):
+        super().__init__()
+        self.norm_final = RMSNorm(x_dim, linear=True, bias=True, eps=1e-5)
+        self.mlp = nn.Sequential(nn.SiLU(), nn.Linear(y_dim, x_dim * 2))
+
+    def forward(self, x, y):
+        shift, scale = self.mlp(y).chunk(2, dim=1)
+        x = modulate(self.norm_final(x), shift, scale)
+        return x
+
+
+class Block(nn.Module):
+    def __init__(self, dim, heads, mlp_dim, dropout=0.):
+        super().__init__()
+
+        self.mlp = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
+
+        self.ln1 = RMSNorm(dim, linear=True, bias=False, eps=1e-5)
+        self.attn = Attention(dim, heads, dropout=dropout)
+
+        self.ln2 = RMSNorm(dim, linear=True, bias=False, eps=1e-5)
+        self.ff = FeedForward(dim, mlp_dim, dropout=dropout)
+
+    def forward(self, x, cond, mask=None):
+        gamma1, beta1, alpha1, gamma2, beta2, alpha2 = self.mlp(cond).chunk(6, dim=1)
+        x = x + alpha1.unsqueeze(1) * self.attn(modulate(self.ln1(x), gamma1, beta1), mask=mask)
+        x = x + alpha2.unsqueeze(1) * self.ff(modulate(self.ln2(x), gamma2, beta2))
+        return x
 
 
 class TransformerEncoder(nn.Module):
     def __init__(self, dim, depth, heads, mlp_dim, dropout=0.):
-        """ Initialize the Attention module.
-            :param:
-                dim       -> int : number of hidden dimension of attention
-                depth     -> int : number of layer for the transformer
-                heads     -> int : Number of heads
-                mlp_dim   -> int : number of hidden dimension for mlp
-                dropout   -> float : Dropout rate
-        """
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, Attention(dim, heads, dropout=dropout)),
-                PreNorm(dim, FeedForward(dim, mlp_dim, dropout=dropout))
-            ]))
+            self.layers.append(Block(dim, heads, mlp_dim, dropout=dropout))
 
-    def forward(self, x):
-        """ Forward pass through the Attention module.
-            :param:
-                x -> torch.Tensor: Input tensor
-            :return
-                x -> torch.Tensor: Output of the Transformer
-                l_attn -> list(torch.Tensor): list of the attention
-        """
-        l_attn = []
-        for attn, ff in self.layers:
-            attention_value, attention_weight = attn(x)
-            x = x + attention_value
-            x = x + ff(x)
-            l_attn.append(attention_weight)
-        return x, l_attn
+    def forward(self, x, cond, mask=None):
+        for block in self.layers:
+            x = block(x, cond, mask=mask)
+        return x
 
 
-class MaskTransformer(nn.Module):
-    def __init__(self, img_size=256, hidden_dim=768, codebook_size=1024, f_factor=16, depth=24, heads=8, mlp_dim=3072, dropout=0.1, nclass=1000):
-        """ Initialize the Transformer model.
-            :param:
-                img_size       -> int:     Input image size (default: 256)
-                hidden_dim     -> int:     Hidden dimension for the transformer (default: 768)
-                codebook_size  -> int:     Size of the codebook (default: 1024)
-                depth          -> int:     Depth of the transformer (default: 24)
-                heads          -> int:     Number of attention heads (default: 8)
-                mlp_dim        -> int:     MLP dimension (default: 3072)
-                dropout        -> float:   Dropout rate (default: 0.1)
-                nclass         -> int:     Number of classes (default: 1000)
-        """
-
+class Transformer(nn.Module):
+    """ DiT-like transformer with adaLayerNorm with zero initializations """
+    def __init__(self, input_size=16, hidden_dim=768, codebook_size=1024,
+                 depth=12, heads=16, mlp_dim=3072, dropout=0., nclass=1000,
+                 register=1, proj=1, **kwargs):
         super().__init__()
-        self.nclass = nclass
-        self.patch_size = f_factor
-        self.codebook_size = codebook_size
-        self.tok_emb = nn.Embedding(codebook_size+1+nclass+1, hidden_dim)  # +1 for the mask of the viz token, +1 for mask of the class
-        self.pos_emb = nn.init.trunc_normal_(nn.Parameter(torch.zeros(1, (self.patch_size*self.patch_size)+1, hidden_dim)), 0., 0.02)
 
-        # First layer before the Transformer block
-        self.first_layer = nn.Sequential(
-            nn.LayerNorm(hidden_dim, eps=1e-12),
-            nn.Dropout(p=dropout),
-            nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim, eps=1e-12),
-            nn.Dropout(p=dropout),
-            nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-        )
+        self.nclass = nclass                                             # Number of classes
+        self.input_size = input_size                                     # Number of tokens as input
+        self.hidden_dim = hidden_dim                                     # Hidden dimension of the transformer
+        self.codebook_size = codebook_size                               # Amount of code in the codebook
+        self.proj = proj                                                 # Projection
 
+        self.cls_emb = nn.Embedding(nclass + 1, hidden_dim)              # Embedding layer for the class token
+        self.tok_emb = nn.Embedding(codebook_size + 1, hidden_dim)       # Embedding layer for the 'visual' token
+        self.pos_emb = nn.Embedding(input_size ** 2, hidden_dim)         # Learnable Positional Embedding
+
+        if self.proj > 1:
+            self.in_proj = nn.Conv2d(hidden_dim, hidden_dim, kernel_size=2, stride=2, bias=False)
+            self.out_proj = nn.Conv2d(
+                hidden_dim, hidden_dim*4, kernel_size=1, stride=1, padding=0, bias=False
+            ).to(memory_format=torch.channels_last)
+
+        # The Transformer Encoder a la BERT :)
         self.transformer = TransformerEncoder(dim=hidden_dim, depth=depth, heads=heads, mlp_dim=mlp_dim, dropout=dropout)
 
-        # Last layer after the Transformer block
-        self.last_layer = nn.Sequential(
-            nn.LayerNorm(hidden_dim, eps=1e-12),
-            nn.Dropout(p=dropout),
-            nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-            nn.GELU(),
-            nn.LayerNorm(hidden_dim, eps=1e-12),
-        )
+        self.last_norm = AdaNorm(x_dim=hidden_dim, y_dim=hidden_dim)   # Last Norm
 
-        # Bias for the last linear output
-        self.bias = nn.Parameter(torch.zeros((self.patch_size*self.patch_size)+1, codebook_size+1+nclass+1))
+        self.head = nn.Linear(hidden_dim, codebook_size + 1)
+        self.head.weight = self.tok_emb.weight  # weight tied with the tok_emb layer
 
-    def forward(self, img_token, y=None, drop_label=None, return_attn=False):
-        """ Forward.
-            :param:
-                img_token      -> torch.LongTensor: bsize x 16 x 16, the encoded image tokens
-                y              -> torch.LongTensor: condition class to generate
-                drop_label     -> torch.BoolTensor: either or not to drop the condition
-                return_attn    -> Bool: return the attn for visualization
-            :return:
-                logit:         -> torch.FloatTensor: bsize x path_size*path_size * 1024, the predicted logit
-                attn:          -> list(torch.FloatTensor): list of attention for visualization
-        """
-        b, w, h = img_token.size()
+        self.register = register
+        if self.register > 0:
+            self.reg_tokens = nn.Embedding(self.register, hidden_dim)
 
-        cls_token = y.view(b, -1) + self.codebook_size + 1  # Shift the class token by the amount of codebook
+        self.initialize_weights()  # Init weight
 
-        cls_token[drop_label] = self.codebook_size + 1 + self.nclass  # Drop condition
-        input = torch.cat([img_token.view(b, -1), cls_token.view(b, -1)], -1)  # concat visual tokens and class tokens
-        tok_embeddings = self.tok_emb(input)
+    def initialize_weights(self):
+        # Initialize transformer layers:
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
 
-        # Position embedding
-        pos_embeddings = self.pos_emb
-        x = tok_embeddings + pos_embeddings
+        self.apply(_basic_init)
 
-        # transformer forward pass
-        x = self.first_layer(x)
-        x, attn = self.transformer(x)
-        x = self.last_layer(x)
+        # Init embedding
+        nn.init.normal_(self.cls_emb.weight, std=0.02)
+        nn.init.normal_(self.tok_emb.weight, std=0.02)
+        nn.init.normal_(self.pos_emb.weight, std=0.02)
 
-        logit = torch.matmul(x, self.tok_emb.weight.T) + self.bias   # Shared layer with the embedding
+        # Zero-out adaNorm modulation layers in blocks:
+        for block in self.transformer.layers:
+            nn.init.constant_(block.mlp[1].weight, 0)
+            nn.init.constant_(block.mlp[1].bias, 0)
 
-        if return_attn:  # return list of attention
-            return logit[:, :self.patch_size * self.patch_size, :self.codebook_size + 1], attn
+        # Init proj layer
+        if self.proj > 1:
+            nn.init.xavier_uniform_(self.in_proj.weight)
+            nn.init.xavier_uniform_(self.out_proj.weight)
 
-        return logit[:, :self.patch_size*self.patch_size, :self.codebook_size+1]
+        # Init embedding
+        if self.register > 0:
+            nn.init.normal_(self.reg_tokens.weight, std=0.02)
 
+    def forward(self, x, y, drop_label, mask=None):
+        b, h, w = x.size()
+        x = x.reshape(b, h*w)
+
+        # Drop the label if drop_label
+        y = torch.where(drop_label, torch.full_like(y, self.nclass), y)
+        y = self.cls_emb(y)
+
+        pos = torch.arange(0, w*h, dtype=torch.long, device=x.device)
+        pos = self.pos_emb(pos)
+
+        x = self.tok_emb(x) + pos
+
+        # reshape, proj to smaller space, reshape (patchify!)
+        if self.proj > 1:
+            x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w, b=b, c=self.hidden_dim).contiguous()
+            x = self.in_proj(x)
+            _, _, h, w = x.shape
+            x = rearrange(x, 'b c h proj_w -> b (h proj_w) c', proj_h=h, proj_w=w, b=b, c=self.hidden_dim).contiguous()
+
+        if self.register > 0:
+            reg = torch.arange(0, self.register, dtype=torch.long, device=x.device)
+            x = torch.cat([x, self.reg_tokens(reg).expand(b, self.register, self.hidden_dim)], dim=1)
+
+        x = self.transformer(x, y, mask=mask)
+
+        # drop the register
+        x = x[:, :h*w].contiguous()
+
+        if self.proj > 1:
+            x = rearrange(x, 'b (h w) c -> b c h w', h=h, w=w, b=b, c=self.hidden_dim).contiguous()
+            x = self.out_proj(x)
+            x = rearrange(x, 'b (c s1 s2) h w -> b (h s1 w s2) c', s1=self.proj, s2=self.proj, b=b, h=h, w=w, c=self.hidden_dim).contiguous()
+
+        x = self.last_norm(x, y)
+        logit = self.head(x)
+
+        return logit
+
+
+if __name__ == "__main__":
+    from thop import profile
+
+    # for size in ["tiny", "small", "base", "large", "xlarge"]:
+    size = "base"
+    print(size)
+    if size == "tiny":
+        hidden_dim, depth, heads = 384, 6, 6
+    elif size == "small":
+        hidden_dim, depth, heads = 512, 8, 6
+    elif size == "base":
+        hidden_dim, depth, heads = 768, 12, 12
+    elif size == "large":
+        hidden_dim, depth, heads = 1024, 24, 16
+    elif size == "xlarge":
+        hidden_dim, depth, heads = 1152, 28, 16
+    else:
+        hidden_dim, depth, heads = 768, 12, 12
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    input_size = 32
+    model = Transformer(input_size=input_size, nclass=1000, hidden_dim=hidden_dim, codebook_size=16834,
+                        depth=depth, heads=heads, mlp_dim=hidden_dim * 4, dropout=0.1).to(device)
+    # model = torch.compile(model)
+    code = torch.randint(0, 16384, size=(1, input_size, input_size)).to(device)
+    cls = torch.randint(0, 1000, size=(1,)).to(device)
+    d_label = (torch.rand(1) < 0.1).to(device)
+    attn_mask = torch.cat([
+        torch.rand(1, (input_size//2)**2).to(device) > 1,
+        torch.tensor([[True]], dtype=torch.bool, device=device)
+    ], dim=1)
+    flops, params = profile(model, inputs=(code, cls, d_label))
+    print(f"FLOPs: {flops//1e9:.2f}G, Params: {params/1e6:.2f}M")
 

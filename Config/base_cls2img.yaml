@@ -1,0 +1,57 @@
+# Paths
+vit_folder: "./saved_networks/ImageNet_384_large.pth"      # Folder where to save the Transformer
+vqgan_folder: "./saved_networks/vq_ds16_c2i.pt"            # Folder of the pretrained VQGAN
+writer_log: ""            # Folder where to store the logs
+data_folder: ""           # Folder containing the dataset of code
+eval_folder: ""           # Folder containing the dataset of images
+
+# Mode
+mode: "cls-to-img"        # Options: cls-to-img | txt-to-img
+test_only: false          # Only evaluate the model
+debug: true               # Enable debugging mode
+resume: true              # Resume training of the model
+compile: false            # Compile the network with PyTorch 2.0
+use_ema: false            # Use exponential moving average (EMA)
+is_master: true           # Primary machine
+is_multi_gpus: false      # default to false
+global_rank: 0            # default to 0
+dtype: "float32"          # precision
+
+# Model and Flops
+vit_size: "large"         # Size of the Vision Transformer
+f_factor: 16              # Image size factor
+codebook_size: 16384      # Size of the VQGAN codebook
+mask_value: 16384         # Value for masking
+register: 1               # Number of registers
+proj: 1                   # Projection of the tokens
+dropout: 0.1              # Dropout rate for the transformer
+
+# Data
+data: "imagenet_feat"     # Dataset to use for training
+nb_class: 1000            # Number of classes
+num_workers: 8            # Number of workers for data loading
+img_size: 384             # Image size
+seed: -1                  # Random seed (-1 means no fixed seed)
+bsize: 256                # Batch size
+
+# Learning
+epoch: 10000              # Number of epochs
+drop_label: 0.1           # Drop rate for label smoothing
+grad_cum: 1               # Gradient accumulation steps
+sched_mode: "arccos"      # Scheduler mode (e.g., arccos)
+warm_up: 2500             # Learning rate warmup steps
+iter: 1000000             # Maximum number of iterations
+lr: 0.0001                # Learning rate
+grad_clip: 1.0            # Gradient clipping threshold
+
+# Sampler
+sampler: "halton"         # Type of sampler (e.g., confidence)
+temp_warmup: 0            # Temperature warmup steps
+step: 32                  # Number of sampling steps
+top_k: -1                 # Top-k sampling (set -1 to disable)
+sched_pow: 2.0            # Scheduler increment power
+cfg_w: 3.0                # Classifier-free guidance weight
+r_temp: 4.5               # Gumbel noise temperature for sampling
+sm_temp: 1.0              # Temperature before softmax
+sm_temp_min: 1.0          # Minimum temperature before softmax
+randomize: false          # Randomize sampling
