@@ -1,6 +1,6 @@
 ## 🌟 Halton Scheduler for Masked Generative Image Transformer 🌟
 
-[![GitHub stars](https://img.shields.io/github/stars/valeoai/Halton-Maskgit.svg?style=social)](https://github.com/valeoai/Halton-Maskgit/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/valeoai/Halton-MaskGIT.svg?style=social)](https://github.com/valeoai/Halton-MaskGIT/stargazers)
 [![Hugging Face Model](https://img.shields.io/badge/Hugging%20Face-Model%20Card-orange?logo=huggingface)](https://huggingface.co/llvictorll/Halton-MaskGIT/tree/main)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/valeoai/Halton-Maskgit/blob/main/colab_demo.ipynb)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.txt)
@@ -206,12 +206,4 @@ If you find our work useful, please cite us and add a star ⭐ to the repository
 
 ## ⭐ Stars History
 
-## Star History
-
-<a href="https://star-history.com/#valeoai/Halton-Maskgit&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=valeoai/Halton-Maskgit&type=Date" />
- </picture>
-</a>
+[![Star History Chart](https://api.star-history.com/svg?repos=valeoai/Halton-MaskGIT&type=Date)](https://star-history.com/#valeoai/Halton-MaskGIT&Date)
