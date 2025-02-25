@@ -34,7 +34,7 @@ This repository introduces **Halton Scheduler for Masked Generative Image Transf
 
 Explore, train, and extend our easy to use generative models! 🚀
 
-The v1.0 version, previously known as "MaskGIT-pytorch"  is available [here!](https://github.com/valeoao/Halton-MaskGIT/releases/tag/v1.0)
+The v1.0 version, previously known as "MaskGIT-pytorch" is available [here!](https://github.com/valeoao/Halton-MaskGIT/releases/tag/v1.0)
 
 ---
 
