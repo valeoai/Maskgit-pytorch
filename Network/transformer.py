@@ -106,8 +106,8 @@ class TransformerEncoder(nn.Module):
         l_attn = []
         for attn, ff in self.layers:
             attention_value, attention_weight = attn(x)
-            x = attention_value + x
-            x = ff(x) + x
+            x = x + attention_value
+            x = x + ff(x)
             l_attn.append(attention_weight)
         return x, l_attn
 
@@ -192,3 +192,5 @@ class MaskTransformer(nn.Module):
             return logit[:, :self.patch_size * self.patch_size, :self.codebook_size + 1], attn
 
         return logit[:, :self.patch_size*self.patch_size, :self.codebook_size+1]
+
+

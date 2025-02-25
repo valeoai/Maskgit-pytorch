@@ -165,3 +165,7 @@ If you find our work beneficial for your research, please consider citing both o
   year = {2022}
 }
 ```
+
+## Stars History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=valeoai/Maskgit-pytorch&type=Date)](https://star-history.com/#valeoai/Maskgit-pytorch&Date)

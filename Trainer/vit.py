@@ -174,6 +174,7 @@ class MaskGIT(Trainer):
         cum_loss, cum_acc = 0., 0.
         window_loss = deque(maxlen=self.args.grad_cum)
         window_acc = deque(maxlen=self.args.grad_cum)
+        window_acc_ignore = deque(maxlen=self.args.grad_cum)
         bar = tqdm(self.train_data, leave=False) if self.args.is_master else self.train_data
         n = len(self.train_data)
         # Start training for 1 epoch
@@ -215,14 +216,19 @@ class MaskGIT(Trainer):
             cum_loss += loss.cpu().item()
             window_loss.append(loss.data.cpu().numpy().mean())
             acc = torch.max(pred.reshape(-1, self.codebook_size+1).data, 1)[1]
-            acc = (acc.view(-1) == code.view(-1)).float().mean().item()
-            cum_acc += acc
-            window_acc.append(acc)
+            acc = (acc.view(-1) == code.view(-1)).float()
+            cum_acc += acc.mean().item()
+            window_acc.append(acc.mean().item())
+            window_acc_ignore.append(acc[mask.view(-1)].mean().item())
 
             # logs
             if update_grad and self.args.is_master:
+                # Mini Batch loss
                 self.log_add_scalar('Train/MiniLoss', np.array(window_loss).sum(), self.args.iter // self.args.grad_cum)
+                # Overall Accuracy (including un-masked visual token)
                 self.log_add_scalar('Train/MiniAcc', np.array(window_acc).mean(), self.args.iter // self.args.grad_cum)
+                # Accuracy excluding un-masked visual token
+                self.log_add_scalar('Train/MiniAccIgnore', np.array(window_acc_ignore).mean(), self.args.iter // self.args.grad_cum)
 
             if self.args.iter % log_iter == 0 and self.args.is_master:
                 # Generate sample for visualization
@@ -412,9 +418,9 @@ class MaskGIT(Trainer):
                     rand = r_temp * np.random.gumbel(size=(nb_sample, self.patch_size*self.patch_size)) * (1 - ratio)
                     conf = torch.log(conf.squeeze()) + torch.from_numpy(rand).to(self.args.device)
                 elif randomize == "warm_up":  # chose random sample for the 2 first steps
-                    conf = torch.rand_like(conf) if indice < 2 else conf
+                    conf = torch.rand_like(conf.squeeze()) if indice < 2 else conf
                 elif randomize == "random":   # chose random prediction at each step
-                    conf = torch.rand_like(conf)
+                    conf = torch.rand_like(conf.squeeze())
 
                 # do not predict on already predicted tokens
                 conf[~mask.bool()] = -math.inf
