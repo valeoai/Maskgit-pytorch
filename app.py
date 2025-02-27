@@ -8,23 +8,20 @@ import torchvision.utils as vutils
 from Trainer.cls_trainer import MaskGIT
 from Sampler.halton_sampler import HaltonSampler
 
-
 # Load config and set device
 config_path = "Config/base_cls2img.yaml"
 args = load_args_from_file(config_path)
 args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Download and load pre-trained models
-hf_hub_download(repo_id="FoundationVision/LlamaGen", filename="vq_ds16_c2i.pt", local_dir="./saved_networks/")
-hf_hub_download(repo_id="llvictorll/Halton-Maskgit", filename="ImageNet_384_large.pth", local_dir="./saved_networks/")
+# Download and load pre-trained models into the workspace directory
+model_path_1 = hf_hub_download(repo_id="FoundationVision/LlamaGen", filename="vq_ds16_c2i.pt", local_dir="./saved_networks/")
+model_path_2 = hf_hub_download(repo_id="llvictorll/Halton-Maskgit", filename="ImageNet_384_large.pth", local_dir="./saved_networks/")
 
 # Initialize the model
 model = MaskGIT(args)
 
-
 # Function for Gradio
 def generate_images(label_input, sm_temp_min, sm_temp_max, temp_pow, temp_warmup, w, sched_pow, step, randomize, top_k):
-
     labels = list(map(int, label_input.split(",")))  # Convert input to list of integers
     labels = torch.LongTensor(labels).to(args.device)
 
@@ -49,7 +46,6 @@ def generate_images(label_input, sm_temp_min, sm_temp_max, temp_pow, temp_warmup
     img = Image.fromarray((gen_images * 255).astype(np.uint8))
     return img
 
-
 # Gradio Interface
 interface = gr.Interface(
     fn=generate_images,
@@ -70,6 +66,6 @@ interface = gr.Interface(
     description="Generate images using the Halton MaskGIT model. Adjust sampling parameters for more control over the output.",
 )
 
-# Launch Gradio app
+# Launch Gradio app for Hugging Face Spaces
 if __name__ == "__main__":
-    interface.launch(server_port=6006)
+    interface.launch(server_name="0.0.0.0")

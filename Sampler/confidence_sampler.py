@@ -1,13 +1,8 @@
-import os
 import math
 from tqdm import tqdm
 import numpy as np
 import random
 import torch
-
-from contextlib import nullcontext
-
-from transformers import AutoTokenizer, T5EncoderModel
 
 
 class ConfidenceSampler(object):
